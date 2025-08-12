@@ -1,5 +1,5 @@
 #
-# نسخه نهایی و عملیاتی اسکریپت
+# نسخه نهایی و عملیاتی اسکریپت با لایه‌های حفاظتی بیشتر
 #
 import requests
 import json
@@ -15,7 +15,6 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
-from selenium.common.exceptions import TimeoutException
 
 # --- تنظیمات اصلی ---
 LOGIN_URL = 'https://mrkonkor.com/login'
@@ -49,36 +48,43 @@ def get_data_with_selenium():
     chrome_options.add_argument(f"user-agent={USER_AGENT}")
 
     driver = webdriver.Chrome(options=chrome_options)
+    page_content, requests_cookies = None, None
     
     try:
         driver.get(LOGIN_URL)
-        wait = WebDriverWait(driver, 30) # افزایش زمان انتظار
-
+        wait = WebDriverWait(driver, 30)
+        
         license_input = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "input[wire\\:model='license']")))
         license_input.send_keys(LICENSE_KEY)
         time.sleep(1)
 
         login_button = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[type='submit']")))
-        driver.execute_script("arguments[0].click();", login_button) # کلیک با جاوا اسکریپت
+        driver.execute_script("arguments[0].click();", login_button)
 
         print("در انتظار لود شدن صفحه آمار...")
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div#container .highcharts-series-group"))) # انتظار برای خود نمودار
+        wait.until(EC.url_to_be(STATS_URL))
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div#container .highcharts-series-group")))
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.flex.w-\\[80\\%\\]")))
         print("صفحه آمار با موفقیت لود شد.")
-        time.sleep(5) # انتظار اضافی برای اطمینان
+        time.sleep(7)
 
         page_content = driver.page_source
         selenium_cookies = driver.get_cookies()
         requests_cookies = {cookie['name']: cookie['value'] for cookie in selenium_cookies}
 
-        return page_content, requests_cookies
-        
     except Exception as e:
         print(f"خطایی هنگام کار با مرورگر رخ داد: {e}")
         send_telegram_message(f"ربات با خطای غیرمنتظره در مرورگر مواجه شد. لطفاً لاگ را بررسی کنید.")
-        driver.save_screenshot('error_screenshot.png')
-        return None, None
     finally:
+        # این بلاک تحت هر شرایطی اجرا می‌شود تا فایل‌های دیباگ ذخیره شوند
+        with open('final_debug_page.html', 'w', encoding='utf-8') as f:
+            f.write(driver.page_source if driver.page_source else "محتوایی دریافت نشد")
+        driver.save_screenshot('final_debug_screenshot.png')
+        print("فایل‌های عیب‌یابی (final_debug_page.html و final_debug_screenshot.png) ذخیره شدند.")
         driver.quit()
+
+    return page_content, requests_cookies
+
 
 def get_data_with_cookies(session):
     print("در حال دریافت صفحه آمار با کوکی‌های ذخیره شده...")
@@ -130,19 +136,25 @@ def extract_data(html_content):
 def compare_data(old_data, new_data):
     changes = []
     old_sources_map = {item['name']: item['z'] for item in old_data['sources']}
-    for new_item in new_data['sources']:
-        name = new_item['name']
-        if name in old_sources_map and old_sources_map.get(name) != new_item.get('z'):
-            change = new_item.get('z', 0) - old_sources_map.get(name, 0)
-            if change != 0:
-                changes.append(f"- {name} (منبع): {change:+} سوال")
+    new_sources_map = {item['name']: item['z'] for item in new_data['sources']}
+    all_source_names = set(old_sources_map.keys()) | set(new_sources_map.keys())
+    for name in sorted(list(all_source_names)):
+        old_val = old_sources_map.get(name, 0)
+        new_val = new_sources_map.get(name, 0)
+        if old_val != new_val:
+            change = new_val - old_val
+            changes.append(f"- {name} (منبع): {change:+} سوال")
+
     old_responses_map = {item['name']: item['total'] for item in old_data['responses']}
-    for new_item in new_data['responses']:
-        name = new_item['name']
-        if name in old_responses_map and old_responses_map.get(name) != new_item.get('total'):
-            change = new_item.get('total', 0) - old_responses_map.get(name, 0)
-            if change != 0:
-                changes.append(f"- {name} (درس): {change:+} سوال")
+    new_responses_map = {item['name']: item['total'] for item in new_data['responses']}
+    all_response_names = set(old_responses_map.keys()) | set(new_responses_map.keys())
+    for name in sorted(list(all_response_names)):
+        old_val = old_responses_map.get(name, 0)
+        new_val = new_responses_map.get(name, 0)
+        if old_val != new_val:
+            change = new_val - old_val
+            changes.append(f"- {name} (درس): {change:+} سوال")
+            
     if not changes:
         return None
     message = "تغییرات جدید در داشبورد مستر کنکور:\n" + "\n".join(changes)
@@ -171,6 +183,7 @@ def main():
     if not new_data:
         print("استخراج داده ناموفق بود. خروج از برنامه.")
         return
+
     if not os.path.exists(DATA_FILE):
         print(f"اجرای اول. در حال ذخیره داده‌های اولیه...")
         with open(DATA_FILE, 'w', encoding='utf-8') as f:
