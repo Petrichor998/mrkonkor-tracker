@@ -1,5 +1,5 @@
 #
-# نسخه نهایی و عملیاتی اسکریپت با لایه‌های حفاظتی بیشتر
+# نسخه نهایی و عملیاتی اسکریپت
 #
 import requests
 import json
@@ -48,7 +48,6 @@ def get_data_with_selenium():
     chrome_options.add_argument(f"user-agent={USER_AGENT}")
 
     driver = webdriver.Chrome(options=chrome_options)
-    page_content, requests_cookies = None, None
     
     try:
         driver.get(LOGIN_URL)
@@ -62,29 +61,24 @@ def get_data_with_selenium():
         driver.execute_script("arguments[0].click();", login_button)
 
         print("در انتظار لود شدن صفحه آمار...")
-        wait.until(EC.url_to_be(STATS_URL))
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div#container .highcharts-series-group")))
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.flex.w-\\[80\\%\\]")))
         print("صفحه آمار با موفقیت لود شد.")
-        time.sleep(7)
+        time.sleep(5)
 
         page_content = driver.page_source
         selenium_cookies = driver.get_cookies()
         requests_cookies = {cookie['name']: cookie['value'] for cookie in selenium_cookies}
 
+        return page_content, requests_cookies
+        
     except Exception as e:
         print(f"خطایی هنگام کار با مرورگر رخ داد: {e}")
         send_telegram_message(f"ربات با خطای غیرمنتظره در مرورگر مواجه شد. لطفاً لاگ را بررسی کنید.")
+        driver.save_screenshot('error_screenshot.png')
+        return None, None
     finally:
-        # این بلاک تحت هر شرایطی اجرا می‌شود تا فایل‌های دیباگ ذخیره شوند
-        with open('final_debug_page.html', 'w', encoding='utf-8') as f:
-            f.write(driver.page_source if driver.page_source else "محتوایی دریافت نشد")
-        driver.save_screenshot('final_debug_screenshot.png')
-        print("فایل‌های عیب‌یابی (final_debug_page.html و final_debug_screenshot.png) ذخیره شدند.")
         driver.quit()
-
-    return page_content, requests_cookies
-
 
 def get_data_with_cookies(session):
     print("در حال دریافت صفحه آمار با کوکی‌های ذخیره شده...")
@@ -102,17 +96,28 @@ def get_data_with_cookies(session):
 
 def extract_data(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
+    
+    # روش جدید و قوی برای استخراج اطلاعات منابع
     sources_data = []
-    pattern = re.compile(r"'name':'(.*?)','y':([\d.]+),'z':(\d+)")
+    pattern = re.compile(r"data:\s*(\[.*?\])", re.DOTALL)
     scripts = soup.find_all('script')
     for script in scripts:
         if script.string and "Highcharts.chart('container'" in script.string:
-            matches = pattern.findall(script.string)
-            for match in matches:
-                sources_data.append({"name": match[0], "y": float(match[1]), "z": int(match[2])})
-            if sources_data:
-                print(f"اطلاعات منابع با موفقیت استخراج شد. ({len(sources_data)} منبع پیدا شد)")
+            match = pattern.search(script.string)
+            if match:
+                json_string = match.group(1)
+                # پاک‌سازی رشته برای تبدیل به JSON معتبر
+                json_string = json_string.replace("'", '"')
+                json_string = re.sub(r'(\w+):', r'"\1":', json_string)
+                json_string = re.sub(r',\s*([}\]])', r'\1', json_string)
+                try:
+                    sources_data = json.loads(json_string)
+                    print(f"اطلاعات منابع با موفقیت استخراج شد. ({len(sources_data)} منبع پیدا شد)")
+                except json.JSONDecodeError as e:
+                    print(f"خطا در پارس کردن JSON منابع: {e}")
             break
+    
+    # استخراج اطلاعات پاسخگویی دروس
     responses_data = []
     response_elements = soup.find_all('div', class_='flex w-[80%]')
     persian_to_english = str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789')
@@ -126,35 +131,40 @@ def extract_data(html_content):
             if match:
                 total_str = match.group(1).translate(persian_to_english)
                 responses_data.append({'name': subject, 'total': int(total_str)})
+    
     if responses_data:
         print(f"اطلاعات پاسخگویی دروس با موفقیت استخراج شد. ({len(responses_data)} درس پیدا شد)")
+    
     if not sources_data or not responses_data:
         send_telegram_message("اسکریپت نتوانست داده‌ها را از صفحه استخراج کند. ممکن است ساختار سایت تغییر کرده باشد.")
         return None
+        
     return {'sources': sources_data, 'responses': responses_data}
 
 def compare_data(old_data, new_data):
     changes = []
-    old_sources_map = {item['name']: item['z'] for item in old_data['sources']}
-    new_sources_map = {item['name']: item['z'] for item in new_data['sources']}
-    all_source_names = set(old_sources_map.keys()) | set(new_sources_map.keys())
-    for name in sorted(list(all_source_names)):
+    old_sources_map = {item.get('name'): item.get('z', 0) for item in old_data.get('sources', [])}
+    new_sources_map = {item.get('name'): item.get('z', 0) for item in new_data.get('sources', [])}
+    all_source_names = sorted(list(set(old_sources_map.keys()) | set(new_sources_map.keys())))
+
+    for name in all_source_names:
         old_val = old_sources_map.get(name, 0)
         new_val = new_sources_map.get(name, 0)
         if old_val != new_val:
             change = new_val - old_val
             changes.append(f"- {name} (منبع): {change:+} سوال")
 
-    old_responses_map = {item['name']: item['total'] for item in old_data['responses']}
-    new_responses_map = {item['name']: item['total'] for item in new_data['responses']}
-    all_response_names = set(old_responses_map.keys()) | set(new_responses_map.keys())
-    for name in sorted(list(all_response_names)):
+    old_responses_map = {item.get('name'): item.get('total', 0) for item in old_data.get('responses', [])}
+    new_responses_map = {item.get('name'): item.get('total', 0) for item in new_data.get('responses', [])}
+    all_response_names = sorted(list(set(old_responses_map.keys()) | set(new_responses_map.keys())))
+
+    for name in all_response_names:
         old_val = old_responses_map.get(name, 0)
         new_val = new_responses_map.get(name, 0)
         if old_val != new_val:
             change = new_val - old_val
             changes.append(f"- {name} (درس): {change:+} سوال")
-            
+        
     if not changes:
         return None
     message = "تغییرات جدید در داشبورد مستر کنکور:\n" + "\n".join(changes)
@@ -182,8 +192,8 @@ def main():
     new_data = extract_data(page_html)
     if not new_data:
         print("استخراج داده ناموفق بود. خروج از برنامه.")
-        return
-
+        sys.exit(1) # با خطا خارج شو تا در گیت‌هاب متوجه شویم
+    
     if not os.path.exists(DATA_FILE):
         print(f"اجرای اول. در حال ذخیره داده‌های اولیه...")
         with open(DATA_FILE, 'w', encoding='utf-8') as f:
