@@ -1,5 +1,5 @@
 #
-# این کد کامل و جدید برای عیب‌یابی است.
+# این کد نهایی و کامل است. تمام محتوای این کادر را کپی کنید
 #
 import requests
 import json
@@ -39,9 +39,12 @@ def send_telegram_message(message):
     except requests.exceptions.RequestException as e:
         print(f"خطا در ارسال پیام تلگرام: {e}")
 
-def perform_login_selenium():
-    """با استفاده از سلنیوم وارد سایت شده و کوکی‌ها را برمی‌گرداند."""
-    print("در حال ورود به سایت با مرورگر (برای اولین بار)...")
+def get_data_with_selenium():
+    """
+    یک مرورگر کامل را باز کرده، لاگین می‌کند، به صفحه آمار می‌رود،
+    صبر می‌کند تا محتوا لود شود و سپس محتوای صفحه و کوکی‌ها را برمی‌گرداند.
+    """
+    print("در حال اجرای مرورگر مجازی برای ورود و دریافت اطلاعات...")
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
@@ -51,62 +54,63 @@ def perform_login_selenium():
     driver = webdriver.Chrome(options=chrome_options)
     
     try:
+        # مرحله لاگین
         driver.get(LOGIN_URL)
         wait = WebDriverWait(driver, 20)
-
         license_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[wire\\:model='license']")))
         license_input.send_keys(LICENSE_KEY)
         time.sleep(1)
-
         login_button = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
         login_button.click()
+        wait.until(EC.url_to_be(STATS_URL))
+        print("لاگین موفقیت‌آمیز بود.")
 
-        wait.until(EC.presence_of_element_located((By.ID, "container")))
-        print("لاگین با مرورگر موفقیت‌آمیز بود.")
+        # حالا که در صفحه آمار هستیم، کمی صبر می‌کنیم تا جاوا اسکریپت کارش را بکند
+        print("منتظر لود شدن کامل اطلاعات صفحه...")
+        time.sleep(7) # <<<<<<<< نکته کلیدی: اینجا صبر می‌کنیم
 
+        # محتوای صفحه را استخراج می‌کنیم
+        page_content = driver.page_source
+        
+        # کوکی‌ها را برای اجراهای بعدی ذخیره می‌کنیم
         selenium_cookies = driver.get_cookies()
         requests_cookies = {cookie['name']: cookie['value'] for cookie in selenium_cookies}
 
-        return requests_cookies
+        return page_content, requests_cookies
 
-    except TimeoutException:
-        print("خطا: زمان انتظار برای ورود به سایت تمام شد.")
-        send_telegram_message("ربات نتوانست با مرورگر وارد سایت شود. خطای Timeout.")
-        driver.save_screenshot('login_error.png')
-        return None
+    except TimeoutException as e:
+        print(f"خطا: زمان انتظار تمام شد. جزئیات: {e}")
+        send_telegram_message("ربات نتوانست وارد سایت شود یا صفحه آمار را لود کند (خطای Timeout).")
+        driver.save_screenshot('error_screenshot.png')
+        return None, None
     except Exception as e:
-        print(f"خطایی هنگام لاگین با مرورگر رخ داد: {e}")
-        send_telegram_message(f"ربات نتوانست با مرورگر وارد سایت شود. خطا: {e}")
-        driver.save_screenshot('login_error.png')
-        return None
+        print(f"خطایی هنگام کار با مرورگر رخ داد: {e}")
+        send_telegram_message(f"ربات با خطای غیرمنتظره مواجه شد: {e}")
+        driver.save_screenshot('error_screenshot.png')
+        return None, None
     finally:
         driver.quit()
 
+def get_data_with_cookies(session):
+    """با استفاده از کوکی‌های موجود، صفحه آمار را دریافت می‌کند."""
+    print("در حال دریافت صفحه آمار با استفاده از کوکی‌های ذخیره شده...")
+    try:
+        response = session.get(STATS_URL, allow_redirects=True, timeout=20)
+        response.raise_for_status()
+        
+        # اگر به صفحه لاگین هدایت شدیم، یعنی کوکی‌ها نامعتبرند
+        if 'ورود کاربر' in response.text or "login" in response.url:
+            print("کوکی‌ها نامعتبر هستند.")
+            return None
+        
+        print("صفحه آمار با کوکی دریافت شد.")
+        return response.text
+    except requests.exceptions.RequestException as e:
+        print(f"خطا در دریافت صفحه با کوکی: {e}")
+        return None
 
-def get_session():
-    """یک سشن جدید می‌سازد یا کوکی‌های قبلی را بارگذاری می‌کند."""
-    session = requests.Session()
-    session.headers.update({'User-Agent': USER_AGENT})
 
-    if os.path.exists(COOKIES_FILE):
-        print(f"فایل {COOKIES_FILE} پیدا شد، در حال بارگذاری کوکی‌ها...")
-        with open(COOKIES_FILE, 'r') as f:
-            cookies = json.load(f)
-            session.cookies.update(cookies)
-    else:
-        print(f"فایل {COOKIES_FILE} پیدا نشد. شروع فرآیند لاگین اولیه...")
-        cookies = perform_login_selenium()
-        if cookies:
-            session.cookies.update(cookies)
-            with open(COOKIES_FILE, 'w') as f:
-                json.dump(cookies, f)
-            print(f"کوکی‌ها در فایل {COOKIES_FILE} ذخیره شدند.")
-        else:
-            print("فرآیند لاگین ناموفق بود. خروج.")
-            sys.exit(1)
-            
-    return session
-
+# توابع extract_data و compare_data بدون تغییر باقی می‌مانند
 def extract_data(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
     sources_data = []
@@ -121,7 +125,7 @@ def extract_data(html_content):
                     sources_data = json.loads(json_string)
                     print("اطلاعات منابع با موفقیت استخراج شد.")
                 except json.JSONDecodeError as e:
-                    print(f"خطا در پارس کردن اطلاعات منابع: {e}")
+                    print(f"خطا در پارس کردن اطلاعات منابع: {e} | رشته: {json_string[:200]}")
                 break
     responses_data = []
     response_elements = soup.find_all('div', class_='flex w-[80%]')
@@ -140,6 +144,8 @@ def extract_data(html_content):
         print("اطلاعات پاسخگویی دروس با موفقیت استخراج شد.")
     if not sources_data or not responses_data:
         send_telegram_message("اسکریپت نتوانست داده‌ها را از صفحه استخراج کند. ممکن است ساختار سایت تغییر کرده باشد.")
+        with open('failed_extraction.html', 'w', encoding='utf-8') as f:
+            f.write(html_content)
         return None
     return {'sources': sources_data, 'responses': responses_data}
 
@@ -163,47 +169,42 @@ def compare_data(old_data, new_data):
     return message
 
 def main():
-    session = get_session()
-    print("در حال دریافت صفحه آمار...")
-    try:
-        response = session.get(STATS_URL, allow_redirects=True, timeout=20)
-        response.raise_for_status()
+    page_html = None
+    
+    # 1. تلاش برای استفاده از کوکی‌های موجود
+    if os.path.exists(COOKIES_FILE):
+        session = requests.Session()
+        session.headers.update({'User-Agent': USER_AGENT})
+        with open(COOKIES_FILE, 'r') as f:
+            cookies = json.load(f)
+            session.cookies.update(cookies)
+        page_html = get_data_with_cookies(session)
 
-        # ذخیره محتوای صفحه برای عیب‌یابی
-        with open('page_content.html', 'w', encoding='utf-8') as f:
-            f.write(response.text)
-        print("محتوای صفحه در page_content.html ذخیره شد.")
-        
-        if 'ورود کاربر' in response.text or "login" in response.url:
-            print("کوکی نامعتبر است. تلاش برای لاگین مجدد...")
-            if os.path.exists(COOKIES_FILE):
-                os.remove(COOKIES_FILE)
-            session = get_session()
-            response = session.get(STATS_URL, timeout=20)
-            response.raise_for_status()
-            with open('page_content.html', 'w', encoding='utf-8') as f:
-                f.write(response.text)
-            print("محتوای صفحه بعد از لاگین مجدد در page_content.html ذخیره شد.")
-            if 'ورود کاربر' in response.text:
-                 raise Exception("لاگین مجدد ناموفق بود.")
-        
-        print("صفحه آمار با موفقیت دریافت شد.")
-    except Exception as e:
-        print(f"خطا در دریافت صفحه آمار: {e}")
-        send_telegram_message(f"خطا در دسترسی به صفحه آمار: {e}")
-        return
-
-    new_data = extract_data(response.text)
+    # 2. اگر کوکی‌ها کار نکردند یا وجود نداشتند، از سلنیوم استفاده کن
+    if not page_html:
+        print("اجرای کامل با مرورگر...")
+        page_html, new_cookies = get_data_with_selenium()
+        if page_html and new_cookies:
+            with open(COOKIES_FILE, 'w') as f:
+                json.dump(new_cookies, f)
+            print(f"کوکی‌ها در فایل {COOKIES_FILE} ذخیره/به‌روز شدند.")
+        else:
+            print("دریافت اطلاعات با مرورگر ناموفق بود. خروج.")
+            sys.exit(1) # خروج با خطا
+    
+    # 3. استخراج و مقایسه داده‌ها
+    new_data = extract_data(page_html)
     if not new_data:
         print("استخراج داده ناموفق بود. خروج از برنامه.")
         return
 
     if not os.path.exists(DATA_FILE):
-        print(f"اجرای اول. در حال ذخیره داده‌های اولیه...")
+        print(f"اجرای اول. در حال ذخیره داده‌های اولیه در {DATA_FILE}...")
         with open(DATA_FILE, 'w', encoding='utf-8') as f:
             json.dump(new_data, f, ensure_ascii=False, indent=4)
-        send_telegram_message("اسکریپت با موفقیت راه‌اندازی شد. داده‌های اولیه ذخیره شدند.")
+        send_telegram_message("اسکریپت رهگیر سوالات با موفقیت راه‌اندازی شد. داده‌های اولیه ذخیره شدند.")
     else:
+        print("در حال مقایسه با داده‌های قبلی...")
         with open(DATA_FILE, 'r', encoding='utf-8') as f:
             old_data = json.load(f)
         
@@ -215,7 +216,7 @@ def main():
             send_telegram_message(change_message)
             with open(DATA_FILE, 'w', encoding='utf-8') as f:
                 json.dump(new_data, f, ensure_ascii=False, indent=4)
-            print("فایل داده‌ها به‌روزرسانی شد.")
+            print("فایل داده‌ها با مقادیر جدید به‌روزرسانی شد.")
         else:
             print("هیچ تغییری شناسایی نشد.")
 
