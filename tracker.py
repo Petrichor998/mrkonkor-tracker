@@ -52,17 +52,18 @@ def get_data_with_selenium():
     
     try:
         driver.get(LOGIN_URL)
-        wait = WebDriverWait(driver, 25) # افزایش زمان انتظار
-        license_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "input[wire\\:model='license']")))
+        wait = WebDriverWait(driver, 30) # افزایش زمان انتظار
+
+        license_input = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "input[wire\\:model='license']")))
         license_input.send_keys(LICENSE_KEY)
         time.sleep(1)
-        login_button = driver.find_element(By.CSS_SELECTOR, "button[type='submit']")
-        login_button.click()
-        wait.until(EC.url_to_be(STATS_URL))
-        print("لاگین موفقیت‌آمیز بود.")
-        
-        print("منتظر لود شدن کامل اطلاعات صفحه...")
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div.highcharts-series-group")))
+
+        login_button = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button[type='submit']")))
+        driver.execute_script("arguments[0].click();", login_button) # کلیک با جاوا اسکریپت
+
+        print("در انتظار لود شدن صفحه آمار...")
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div#container .highcharts-series-group"))) # انتظار برای خود نمودار
+        print("صفحه آمار با موفقیت لود شد.")
         time.sleep(5) # انتظار اضافی برای اطمینان
 
         page_content = driver.page_source
@@ -70,9 +71,10 @@ def get_data_with_selenium():
         requests_cookies = {cookie['name']: cookie['value'] for cookie in selenium_cookies}
 
         return page_content, requests_cookies
+        
     except Exception as e:
         print(f"خطایی هنگام کار با مرورگر رخ داد: {e}")
-        send_telegram_message(f"ربات با خطای غیرمنتظره در مرورگر مواجه شد: {e}")
+        send_telegram_message(f"ربات با خطای غیرمنتظره در مرورگر مواجه شد. لطفاً لاگ را بررسی کنید.")
         driver.save_screenshot('error_screenshot.png')
         return None, None
     finally:
@@ -94,8 +96,6 @@ def get_data_with_cookies(session):
 
 def extract_data(html_content):
     soup = BeautifulSoup(html_content, 'html.parser')
-    
-    # روش جدید و قوی برای استخراج اطلاعات منابع
     sources_data = []
     pattern = re.compile(r"'name':'(.*?)','y':([\d.]+),'z':(\d+)")
     scripts = soup.find_all('script')
@@ -107,8 +107,6 @@ def extract_data(html_content):
             if sources_data:
                 print(f"اطلاعات منابع با موفقیت استخراج شد. ({len(sources_data)} منبع پیدا شد)")
             break
-
-    # استخراج اطلاعات پاسخگویی
     responses_data = []
     response_elements = soup.find_all('div', class_='flex w-[80%]')
     persian_to_english = str.maketrans('۰۱۲۳۴۵۶۷۸۹', '0123456789')
@@ -122,14 +120,11 @@ def extract_data(html_content):
             if match:
                 total_str = match.group(1).translate(persian_to_english)
                 responses_data.append({'name': subject, 'total': int(total_str)})
-    
     if responses_data:
         print(f"اطلاعات پاسخگویی دروس با موفقیت استخراج شد. ({len(responses_data)} درس پیدا شد)")
-    
     if not sources_data or not responses_data:
         send_telegram_message("اسکریپت نتوانست داده‌ها را از صفحه استخراج کند. ممکن است ساختار سایت تغییر کرده باشد.")
         return None
-        
     return {'sources': sources_data, 'responses': responses_data}
 
 def compare_data(old_data, new_data):
@@ -137,15 +132,17 @@ def compare_data(old_data, new_data):
     old_sources_map = {item['name']: item['z'] for item in old_data['sources']}
     for new_item in new_data['sources']:
         name = new_item['name']
-        if name in old_sources_map and old_sources_map[name] != new_item['z']:
-            change = new_item['z'] - old_sources_map[name]
-            changes.append(f"- {name} (منبع): {change:+} سوال")
+        if name in old_sources_map and old_sources_map.get(name) != new_item.get('z'):
+            change = new_item.get('z', 0) - old_sources_map.get(name, 0)
+            if change != 0:
+                changes.append(f"- {name} (منبع): {change:+} سوال")
     old_responses_map = {item['name']: item['total'] for item in old_data['responses']}
     for new_item in new_data['responses']:
         name = new_item['name']
-        if name in old_responses_map and old_responses_map[name] != new_item['total']:
-            change = new_item['total'] - old_responses_map[name]
-            changes.append(f"- {name} (درس): {change:+} سوال")
+        if name in old_responses_map and old_responses_map.get(name) != new_item.get('total'):
+            change = new_item.get('total', 0) - old_responses_map.get(name, 0)
+            if change != 0:
+                changes.append(f"- {name} (درس): {change:+} سوال")
     if not changes:
         return None
     message = "تغییرات جدید در داشبورد مستر کنکور:\n" + "\n".join(changes)
@@ -160,7 +157,6 @@ def main():
             cookies = json.load(f)
             session.cookies.update(cookies)
         page_html = get_data_with_cookies(session)
-
     if not page_html:
         page_html, new_cookies = get_data_with_selenium()
         if page_html and new_cookies:
@@ -175,7 +171,6 @@ def main():
     if not new_data:
         print("استخراج داده ناموفق بود. خروج از برنامه.")
         return
-
     if not os.path.exists(DATA_FILE):
         print(f"اجرای اول. در حال ذخیره داده‌های اولیه...")
         with open(DATA_FILE, 'w', encoding='utf-8') as f:
