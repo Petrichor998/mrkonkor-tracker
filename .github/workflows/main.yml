@@ -3,7 +3,7 @@ name: MrKonkor Tracker
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 8 * * *' # هر روز ساعت ۸ صبح به وقت جهانی (UTC)
+    - cron: '0 8 * * *'
 
 jobs:
   build:
@@ -36,3 +36,12 @@ jobs:
           git add cookies.json data.json || exit 0
           git commit -m "Update data files" -a || exit 0
           git push || exit 0
+
+      - name: Upload Artifacts for Debugging
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-artifacts
+          path: |
+            page_content.html
+            login_error.png
+          retention-days: 5
