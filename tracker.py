@@ -19,9 +19,10 @@ from selenium.webdriver.chrome.options import Options
 # --- تنظیمات ---
 LOGIN_URL = 'https://mrkonkor.com/login'
 STATS_URL = 'https://mrkonkor.com/user'
-LICENSE_KEY = 'BZ8PEXS4GR7DJHN4YQLF'
-TELEGRAM_BOT_TOKEN = '8308117883:AAGt32gWXGp44-_fBpLBMSfKDRidiW_0_34'
-TELEGRAM_CHAT_ID = '5858496632'
+# خواندن اطلاعات حساس از متغیرهای محیطی
+LICENSE_KEY = os.getenv('LICENSE_KEY')
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 COOKIES_FILE = 'cookies.json'
 HISTORY_FILE = 'history.json'
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36'
@@ -138,6 +139,10 @@ def process_data_and_notify(new_data):
 
 
 def main():
+    if not all([LICENSE_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID]):
+        print("خطا: یک یا چند متغیر محیطی (Secrets) تنظیم نشده‌اند.")
+        sys.exit(1)
+
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
